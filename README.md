@@ -1,4 +1,3 @@
-wol-ranking-api
-===============
+# World of Logs ranking API #
 
-Web API for World of Logs player ranking data
+ASP.NET web API exposing the World of Logs player ranking data via HTTP. 
