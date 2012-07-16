@@ -1,16 +1,18 @@
 ﻿using System;
-using System.Globalization;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
-using System.Net;
 using System.Net.Http;
+using System.Threading.Tasks;
 using System.Web.Http;
-using WoLRankingApi.Models;
 using HtmlAgilityPack;
+using WoLRankingApi.Models;
+using WoLRankingApi.Services;
 
 namespace WoLRankingApi.Controllers {
 
     public class RankingController : ApiController {
+        static RankingsService _service = new RankingsService();
 
         // Other URL schemes to consider supporting:
         //
@@ -32,10 +34,12 @@ namespace WoLRankingApi.Controllers {
         //          5. decide if we want to return enum values (matching blizz api?) or stringified enum names
         [HttpGet]
         public IEnumerable<Ranking> Guild(int id) {
-
             int page = 0;
-            while (true) {
+            bool moreRanks = true;
+            while (moreRanks) {
+                moreRanks = false;
                 page++;
+
                 var uri = string.Format(@"http://www.worldoflogs.com/guilds/{0}/rankings/players/?page={1}", id, page);
                 HtmlWeb web = new HtmlWeb();
                 HtmlDocument doc = web.Load(uri);
@@ -46,9 +50,6 @@ namespace WoLRankingApi.Controllers {
                                from tr in div.Descendants("tr")
                                where tr.GetAttributeValue("class", "") == "odd" || tr.GetAttributeValue("class", "") == "even"
                                select tr;
-
-                if (rankings == null || rankings.Count() == 0)
-                    break;
 
                 foreach (var row in rankings) {
                     var td = row.Descendants("td").ToArray();
@@ -68,9 +69,81 @@ namespace WoLRankingApi.Controllers {
                         Contribution = Double.Parse(td[12].InnerText.Split(' ')[0]),
                         Duration = td[13].InnerText
                     };
+                    moreRanks = true;
                     yield return r;
                 }
             }
+        }
+
+        // GET api/ranking/guildasyncget/{0}
+        [HttpGet]
+        public async Task<IEnumerable<Ranking>> GuildAsyncGet(int id) {
+            var result = new List<Ranking>();
+            var client = new HttpClient();
+            var doc = new HtmlDocument();
+            bool moreRanks = true;
+            int page = 0;
+            while (moreRanks) {
+                moreRanks = false;
+                page++;
+
+                var uri = string.Format(@"http://www.worldoflogs.com/guilds/{0}/rankings/players/?page={1}", id, page);
+                HttpResponseMessage rsp = await client.GetAsync(uri);
+                if (!rsp.IsSuccessStatusCode)
+                    break;
+
+                var strm = await rsp.Content.ReadAsStreamAsync();
+                doc.Load(strm);
+
+                // Swap this back to LINQ API calls when there are unit tests (SQL is easier to read, harder to debug)
+                var rankings = from div in doc.DocumentNode.Descendants("div")
+                                where div.Id == "tab-DPS" || div.Id == "tab-healers"
+                                from tr in div.Descendants("tr")
+                                where tr.GetAttributeValue("class", "") == "odd" || tr.GetAttributeValue("class", "") == "even"
+                                select tr;
+
+                foreach (var row in rankings) {
+                    var td = row.Descendants("td").ToArray();
+                    var r = new Ranking() {
+                        Rank = Int32.Parse(td[0].Descendants("span").FirstOrDefault().InnerText),
+                        RankUri = new Uri(new Uri("http://www.worldoflogs.com"), td[0].Element("a").GetAttributeValue("href", "")),
+                        Player = td[1].InnerText,
+                        ParseUri = new Uri(new Uri("http://www.worldoflogs.com"), td[1].Element("a").GetAttributeValue("href", "")),
+                        Class = Helpers.ParseClass(td[2].Element("div").GetAttributeValue("class", "").Split(' ')[1]),
+                        Spec = td[3].Element("div").GetAttributeValue("class", "").Split(' ')[1],
+                        Date = td[4].InnerText,
+                        Encounter = td[5].InnerText,
+                        Size = Int32.Parse(td[6].InnerText),
+                        Difficulty = Helpers.ParseDifficulty(td[7].InnerText),
+                        OutputRate = Int64.Parse(td[9].InnerText),
+                        OutputTotal = Int64.Parse(td[11].InnerText.Replace(" ", ","), NumberStyles.AllowThousands),
+                        Contribution = Double.Parse(td[12].InnerText.Split(' ')[0]),
+                        Duration = td[13].InnerText
+                    };
+                    moreRanks = true;
+                    result.Add(r);
+                }
+            }
+            return result;
+        }
+
+        // GET api/ranking/guildasyncall/{0}
+        [HttpGet]
+        public async Task<IEnumerable<Ranking>> GuildAsyncAll(int id) {
+            IEnumerable<Ranking> result = new List<Ranking>();
+
+            int page = 0;
+            while (true) {
+                page++;
+
+                var ranks = await _service.ScrapeRankingsHtml(id, page);
+                if (ranks.Count() == 0)
+                    break;
+                
+                result = result.Concat(ranks);
+            }
+
+            return result;
         }
     }
 }
